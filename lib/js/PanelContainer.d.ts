@@ -26,6 +26,7 @@ export declare class PanelContainer implements IDockContainerWithSize {
         resizeHandler?: any;
         _dockSpawnPanelContainer: PanelContainer;
     };
+    private _resolvedElementContent;
     elementContentContainer: HTMLElement;
     elementContentWrapper: HTMLElement;
     dockManager: DockManager;
@@ -44,6 +45,8 @@ export declare class PanelContainer implements IDockContainerWithSize {
     touchDownHandler: EventHandler;
     panelType: PanelType;
     tabPage?: TabPage;
+    undockedToNewBrowserWindow: boolean;
+    contextMenuHandler: EventHandler;
     lastDialogSize?: ISize;
     _floatingDialog?: Dialog;
     _canUndock: boolean;
@@ -51,19 +54,24 @@ export declare class PanelContainer implements IDockContainerWithSize {
     _cachedHeight: number;
     _hideCloseButton: boolean;
     _grayOut: HTMLDivElement;
+    _ctxMenu: HTMLDivElement;
     constructor(elementContent: HTMLElement, dockManager: DockManager, title?: string, panelType?: PanelType, hideCloseButton?: boolean);
+    _initialize(): void;
+    static createContextMenuContentCallback: (panelContainer: PanelContainer) => Node[];
+    oncontextMenuClicked(e: MouseEvent): void;
+    closeContextMenu(): void;
+    windowsContextMenuClose(e: Event): void;
     canUndock(state: boolean): void;
     addListener(listener: any): void;
     removeListener(listener: any): void;
     get floatingDialog(): Dialog;
     set floatingDialog(value: Dialog);
-    static loadFromState(state: IState, dockManager: DockManager): PanelContainer;
+    static loadFromState(state: IState, dockManager: DockManager): Promise<PanelContainer>;
     saveState(state: IState): void;
     loadState(state: IState): void;
     setActiveChild(): void;
     get containerElement(): HTMLDivElement;
     grayOut(show: boolean): void;
-    _initialize(): void;
     onMouseDown(): void;
     hideCloseButton(state: boolean): void;
     destroy(): void;
@@ -74,7 +82,7 @@ export declare class PanelContainer implements IDockContainerWithSize {
     /**
     * Closes the panel
     */
-    performClose(): void;
+    private performClose;
     /**
      * Undocks the container and from the layout hierarchy
      * The container would be removed from the DOM
@@ -85,6 +93,8 @@ export declare class PanelContainer implements IDockContainerWithSize {
     set width(value: number);
     get height(): number;
     set height(value: number);
+    get resolvedElementContent(): HTMLElement;
+    private panelDocked;
     resize(width: number, height: number): void;
     _setPanelDimensions(width: number, height: number): void;
     setDialogPosition(x: number, y: number): void;
@@ -97,5 +107,7 @@ export declare class PanelContainer implements IDockContainerWithSize {
     getRawTitle(): string;
     performLayout(children: IDockContainer[], relayoutEvenIfEqual: boolean): void;
     onCloseButtonClicked(e: Event): void;
+    undockToBrowserDialog(): void;
     close(): Promise<void>;
+    private closeInternal;
 }
