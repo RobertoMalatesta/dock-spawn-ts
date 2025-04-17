@@ -5,6 +5,7 @@ import { EventHandler } from "./EventHandler.js";
 import { Utils } from "./Utils.js";
 import { PanelType } from "./enums/PanelType.js";
 import { DockNode } from "./DockNode.js";
+import { Localizer } from "./i18n/Localizer.js";
 
 /**
  * A tab handle represents the tab button on the tab strip
@@ -74,8 +75,12 @@ export class TabHandle {
         this.closeButtonHandler = new EventHandler(this.elementCloseButton, 'click', this.onCloseButtonClicked.bind(this));
         this.closeButtonTouchHandler = new EventHandler(this.elementCloseButton, 'touchstart', this.onCloseButtonClicked.bind(this));
         this.auxClickHandler = new EventHandler(this.elementBase, 'auxclick', this.onCloseButtonClicked.bind(this));
-        this.contextMenuHandler = new EventHandler(this.elementBase, 'contextmenu', this.oncontextMenuClicked.bind(this));
 
+        if (panel.panelType == PanelType.document) {
+            this.contextMenuHandler = new EventHandler(this.elementBase, 'contextmenu', this.oncontextMenuClicked.bind(this));
+        }
+
+        this.windowsContextMenuClose = this.windowsContextMenuClose.bind(this);
         //this.zIndexCounter = parent.host.dockManager.zIndexTabHandle;
     }
 
@@ -91,14 +96,12 @@ export class TabHandle {
         this.undockInitiator.enabled = state;
     }
 
-    static createContextMenuContentCallback = (tabHandle: TabHandle, contextMenuContainer: HTMLDivElement, documentMangerNodes: DockNode[]) => {
-        let btnCloseAll = document.createElement('div');
-        btnCloseAll.innerText = 'Close all documents';
-        contextMenuContainer.append(btnCloseAll);
+    static createContextMenuContentCallback = (tabHandle: TabHandle, documentMangerNodes: DockNode[]): Node[] => {
+        const result = [];
 
-        let btnCloseAllButThis = document.createElement('div');
-        btnCloseAllButThis.innerText = 'Close all documents but this';
-        contextMenuContainer.append(btnCloseAllButThis);
+        let btnCloseAll = document.createElement('div');
+        btnCloseAll.innerText = Localizer.getString('CloseAll');
+        result.push(btnCloseAll);
 
         btnCloseAll.onclick = () => {
             let length = documentMangerNodes.length;
@@ -110,6 +113,10 @@ export class TabHandle {
             tabHandle.closeContextMenu();
         };
 
+        let btnCloseAllButThis = document.createElement('div');
+        btnCloseAllButThis.innerText = Localizer.getString('CloseAllButThis');
+        result.push(btnCloseAllButThis);
+
         btnCloseAllButThis.onclick = () => {
             let length = documentMangerNodes.length;
             for (let i = length - 1; i >= 0; i--) {
@@ -119,22 +126,41 @@ export class TabHandle {
             }
             tabHandle.closeContextMenu();
         };
+
+        if (tabHandle.parent.container.dockManager.config.enableBrowserWindows) {
+            let btnNewBrowserWindow = document.createElement('div');
+            btnNewBrowserWindow.innerText = Localizer.getString('NewBrowserWindow');
+            result.push(btnNewBrowserWindow);
+    
+            btnNewBrowserWindow.onclick = () => {
+                (<PanelContainer>tabHandle.parent.container).undockToBrowserDialog();
+                tabHandle.closeContextMenu();
+            };
+        }
+
+        return result;
     }
 
     oncontextMenuClicked(e: MouseEvent) {
         e.preventDefault();
 
         if (!this._ctxMenu && TabHandle.createContextMenuContentCallback) {
+            const menuItems = TabHandle.createContextMenuContentCallback(
+                this, 
+                this.parent.container.dockManager.context.model.documentManagerNode.children
+            );
+
+            if (menuItems.length == 0) {
+                return;
+            }
+            
             this._ctxMenu = document.createElement('div');
             this._ctxMenu.className = 'dockspab-tab-handle-context-menu';
-
-            TabHandle.createContextMenuContentCallback(this, this._ctxMenu, this.parent.container.dockManager.context.model.documentManagerNode.children);
-
+            this._ctxMenu.append(...menuItems);
             this._ctxMenu.style.left = e.pageX + "px";
             this._ctxMenu.style.top = e.pageY + "px";
             document.body.appendChild(this._ctxMenu);
-            this._windowsContextMenuCloseBound = this.windowsContextMenuClose.bind(this)
-            window.addEventListener('mouseup', this._windowsContextMenuCloseBound);
+            window.addEventListener('mouseup', this.windowsContextMenuClose);
         } else {
             this.closeContextMenu();
         }
@@ -144,7 +170,7 @@ export class TabHandle {
         if (this._ctxMenu) {
             document.body.removeChild(this._ctxMenu);
             delete this._ctxMenu;
-            window.removeEventListener('mouseup', this._windowsContextMenuCloseBound);
+            window.removeEventListener('mouseup', this.windowsContextMenuClose);
         }
     }
 
@@ -271,10 +297,15 @@ export class TabHandle {
             this.contextMenuHandler.cancel();
         }
 
-        Utils.removeNode(this.elementBase);
-        Utils.removeNode(this.elementCloseButton);
-        delete this.elementBase;
-        delete this.elementCloseButton;
+        if (this.elementBase) {
+            Utils.removeNode(this.elementBase);
+            delete this.elementBase;
+        }
+
+        if (this.elementCloseButton) {
+            Utils.removeNode(this.elementCloseButton);
+            delete this.elementCloseButton;
+        }
     }
 
     _performUndock(e, dragOffset) {

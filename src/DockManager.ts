@@ -18,6 +18,7 @@ import { DockModel } from "./DockModel.js";
 import { IDockContainerWithSize } from "./interfaces/IDockContainerWithSize.js";
 import { DockConfig } from "./DockConfig.js";
 import { PanelType } from "./enums/PanelType.js";
+import { IState } from "./interfaces/IState.js";
 
 /**
  * Dock manager manages all the dock panels in a hierarchy, similar to visual studio.
@@ -43,6 +44,7 @@ export class DockManager {
     public onKeyPressBound: any;
     public iframes: HTMLIFrameElement[];
     public _undockEnabled: boolean;
+    public getElementCallback: (state: IState) => Promise<{ element: HTMLElement, title: string }>;
 
     private _config: DockConfig;
     private _activePanel: PanelContainer;
@@ -108,19 +110,20 @@ export class DockManager {
         if (this._config.moveOnlyWithinDockConatiner)
             return this.checkXBoundsWithinDockContainer(container, currentMousePosition, previousMousePosition, resizeWest, resizeEast);
 
+        let rect = this.element.getBoundingClientRect();
         let dx = Math.floor(currentMousePosition.x - previousMousePosition.x);
-        let leftBounds = container.offsetLeft + container.offsetWidth + dx < 40; // || (container.offsetLeft + container.offsetWidth + dx - 40 ) < 0;
-        let rightBounds = container.offsetLeft + dx > (window.innerWidth - 40);
+        let leftBounds = container.offsetLeft + container.offsetWidth + dx + rect.left < 40; // || (container.offsetLeft + container.offsetWidth + dx - 40 ) < 0;
+        let rightBounds = container.offsetLeft + dx + rect.left > (window.innerWidth - 40);
         if (leftBounds) {
             previousMousePosition.x = currentMousePosition.x;
             dx = 0;
-            let d = 40 - (container.offsetWidth + container.offsetLeft);
+            let d = 40 - (container.offsetWidth + container.offsetLeft + rect.left);
             if (d > 0)
                 dx = d;
         } else if (rightBounds) {
             previousMousePosition.x = currentMousePosition.x;
             dx = 0;
-            let d = (window.innerWidth - 40) - container.offsetLeft;
+            let d = (window.innerWidth - 40) - container.offsetLeft - rect.left;
             if (d > 0)
                 dx = d;
         }
@@ -151,16 +154,17 @@ export class DockManager {
         if (this._config.moveOnlyWithinDockConatiner)
             return this.checkYBoundsWithinDockContainer(container, currentMousePosition, previousMousePosition, resizeNorth, resizeSouth);
 
+        let rect = this.element.getBoundingClientRect();
         let dy = Math.floor(currentMousePosition.y - previousMousePosition.y);
         let topBounds = container.offsetTop + dy < 0;
-        let bottomBounds = container.offsetTop + dy > (window.innerHeight - 16);
+        let bottomBounds = container.offsetTop + dy + rect.top > (window.innerHeight - 16);
         if (topBounds) {
             previousMousePosition.y = currentMousePosition.y;
             dy = 0;
         } else if (bottomBounds) {
             previousMousePosition.y = currentMousePosition.y;
             dy = 0;
-            let d = (window.innerHeight - 25) - container.offsetTop;
+            let d = (window.innerHeight - 16) - container.offsetTop - rect.top;
             if (d > 0)
                 dy = d;
         }
@@ -519,7 +523,7 @@ export class DockManager {
         // Create a new dialog window for the undocked panel
         let dialog = new Dialog(container, this, null, disableResize);
 
-        if (event !== undefined) {
+        if (event != null) {
             // Adjust the relative position
             let dialogWidth = dialog.elementDialog.clientWidth;
             if (dragOffset.x > dialogWidth)
@@ -560,8 +564,37 @@ export class DockManager {
         while (stack.length > 0) {
             let topNode = stack.pop();
 
-            if (topNode.container instanceof PanelContainer && topNode.container.elementContent.id === id)
-                return topNode;
+            if (topNode.container instanceof PanelContainer) {
+                if (topNode.container.elementContent.id === id)
+                    return topNode;
+                if (topNode.container.elementContent instanceof HTMLSlotElement) {
+                    if ((<HTMLSlotElement>topNode.container.elementContent).assignedElements()?.[0]?.id === id)
+                        return topNode;
+                }
+            }
+
+            [].push.apply(stack, topNode.children);
+        }
+
+        return null;
+    }
+
+    getNodeByElement(element: Element): DockNode {
+        let stack = [];
+        stack.push(this.context.model.rootNode);
+
+        while (stack.length > 0) {
+            let topNode = stack.pop();
+
+            if (topNode.container instanceof PanelContainer) {
+                if (topNode.container.elementContent === element)
+                    return topNode;
+                if (topNode.container.elementContent instanceof HTMLSlotElement) {
+                    if ((<HTMLSlotElement>topNode.container.elementContent).assignedElements()?.[0] === element)
+                        return topNode;
+                }
+            }
+
             [].push.apply(stack, topNode.children);
         }
 
@@ -719,12 +752,12 @@ export class DockManager {
         });
     }
 
-    notifyOnActiveDocumentChange(panel: PanelContainer, oldActive: PanelContainer) {
-        this.layoutEventListeners.forEach((listener) => {
+    async notifyOnActiveDocumentChange(panel: PanelContainer, oldActive: PanelContainer) {
+        for (const listener of this.layoutEventListeners) {
             if (listener.onActiveDocumentChange) {
-                listener.onActiveDocumentChange(this, panel, oldActive);
+                await listener.onActiveDocumentChange(this, panel, oldActive);
             }
-        });
+        }
     }
 
     saveState() {
@@ -732,9 +765,9 @@ export class DockManager {
         return serializer.serialize(this.context.model);
     }
 
-    loadState(json: string) {
+    async loadState(json: string) {
         let deserializer = new DockGraphDeserializer(this);
-        this.context.model = deserializer.deserialize(json);
+        this.context.model = await deserializer.deserialize(json);
         this.setModel(this.context.model);
     }
 

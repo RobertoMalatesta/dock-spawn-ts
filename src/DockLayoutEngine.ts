@@ -69,8 +69,7 @@ export class DockLayoutEngine {
 
                     otherChild.container.resize(width, height);
                     grandParent.performLayout(false);
-                }
-                else {
+                } else {
                     // Parent is a root node.
                     // Make the other child the root node
                     parentNode.detachFromParent();
@@ -96,7 +95,7 @@ export class DockLayoutEngine {
     }
 
     close(node: DockNode) {
-        let parentNode = node.parent;
+        let parentNode = node?.parent;
         if (!parentNode)
             throw new Error('Cannot undock.  panel is not a leaf node');
 

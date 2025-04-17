@@ -11,6 +11,8 @@ import { IDockContainer } from "./interfaces/IDockContainer.js";
 import { PanelType } from "./enums/PanelType.js";
 import { Dialog } from "./Dialog.js";
 import { TabPage } from './TabPage.js';
+import { Localizer } from "./i18n/Localizer.js";
+import { moveElementToNewBrowserWindow } from "./BrowserDialogHelper.js";
 
 /**
  * This dock container wraps the specified element on a panel frame with a title bar and close button
@@ -27,6 +29,7 @@ export class PanelContainer implements IDockContainerWithSize {
     name: string;
     state: ISize;
     elementContent: HTMLElement & { resizeHandler?: any, _dockSpawnPanelContainer: PanelContainer };
+    private _resolvedElementContent: HTMLElement;
     elementContentContainer: HTMLElement;
     elementContentWrapper: HTMLElement;
     dockManager: DockManager;
@@ -45,6 +48,8 @@ export class PanelContainer implements IDockContainerWithSize {
     touchDownHandler: EventHandler;
     panelType: PanelType;
     tabPage?: TabPage;
+    undockedToNewBrowserWindow = false;
+    contextMenuHandler: EventHandler;
 
     lastDialogSize?: ISize;
 
@@ -54,10 +59,11 @@ export class PanelContainer implements IDockContainerWithSize {
     _cachedHeight: number;
     _hideCloseButton: boolean;
     _grayOut: HTMLDivElement;
+    _ctxMenu: HTMLDivElement;
 
     constructor(elementContent: HTMLElement, dockManager: DockManager, title?: string, panelType?: PanelType, hideCloseButton?: boolean) {
         if (!title)
-            title = 'Panel';
+            title = Localizer.getString('DefaultPanelName');
         if (!panelType)
             panelType = PanelType.panel;
         this.panelType = panelType;
@@ -69,20 +75,22 @@ export class PanelContainer implements IDockContainerWithSize {
         elementContent.style.height = '100%'
         elementContent.style.top = '0'
         elementContent.style.bottom = '0'
-        elementContent.hidden = false;
         this.elementContentContainer = document.createElement('div');
         this.elementContentContainer.className = 'panel-element-content-container';
         this.elementContentContainer.style.position = 'absolute';
         (<any>this.elementContentContainer)._panel = this;
-        this.elementContentContainer.addEventListener('pointerdown', () => {
-            if (this.isDialog) {
-                this._floatingDialog.bringToFront();
-            } else {
-                if (this.tabPage)
-                    this.tabPage.setSelected(true);
+        this.elementContentContainer.addEventListener('pointerdown', (e) => {
+            try {
+                if (this.isDialog) {
+                    this._floatingDialog.bringToFront();
+                } else {
+                    if (this.tabPage)
+                        this.tabPage.setSelected(true, true);
+                }
+                this.dockManager.activePanel = this;
             }
-            this.dockManager.activePanel = this;
-        });
+            catch { }
+        }, { passive: true });
         this.elementContentContainer.appendChild(elementContent);
         dockManager.config.dialogRootElement.appendChild(this.elementContentContainer);
 
@@ -96,7 +104,130 @@ export class PanelContainer implements IDockContainerWithSize {
         this._canUndock = dockManager._undockEnabled;
         this.eventListeners = [];
         this._hideCloseButton = hideCloseButton;
+        this.windowsContextMenuClose = this.windowsContextMenuClose.bind(this);
+
         this._initialize();
+    }
+
+    _initialize() {
+        this.name = Utils.getNextId('panel_');
+        this.elementPanel = document.createElement('div');
+        this.elementPanel.tabIndex = 0;
+        this.elementTitle = document.createElement('div');
+        this.contextMenuHandler = new EventHandler(this.elementTitle, 'contextmenu', this.oncontextMenuClicked.bind(this));
+
+        this.elementTitleText = document.createElement('div');
+        this.elementContentHost = document.createElement('div');
+        this.elementButtonClose = document.createElement('div');
+
+        this.elementPanel.appendChild(this.elementTitle);
+        this.elementTitle.appendChild(this.elementTitleText);
+        this.elementTitle.appendChild(this.elementButtonClose);
+        this.elementButtonClose.classList.add('panel-titlebar-button-close');
+        this.elementButtonClose.style.display = this._hideCloseButton ? 'none' : 'block';
+
+        this.elementPanel.appendChild(this.elementContentHost);
+
+        this.elementPanel.classList.add('panel-base');
+        this.elementTitle.classList.add('panel-titlebar');
+        this.elementTitle.classList.add('disable-selection');
+        this.elementTitleText.classList.add('panel-titlebar-text');
+        this.elementContentHost.classList.add('panel-content');
+
+        // set the size of the dialog elements based on the panel's size
+        let panelWidth = this.elementContentContainer.clientWidth;
+        let panelHeight = this.elementContentContainer.clientHeight;
+        let titleHeight = this.elementTitle.clientHeight;
+
+        this.elementContentWrapper = document.createElement("div");
+        this.elementContentWrapper.classList.add('panel-content-wrapper');
+
+        this._setPanelDimensions(panelWidth, panelHeight + titleHeight);
+
+        if (!this._hideCloseButton) {
+            this.closeButtonClickedHandler =
+                new EventHandler(this.elementButtonClose, 'mousedown', this.onCloseButtonClicked.bind(this));
+            this.closeButtonTouchedHandler =
+                new EventHandler(this.elementButtonClose, 'touchstart', this.onCloseButtonClicked.bind(this));
+        }
+
+        Utils.removeNode(this.elementContentWrapper);
+        this.elementContentHost.appendChild(this.elementContentWrapper);
+
+        // Extract the title from the content element's attribute
+        let contentTitle = this.elementContent.dataset.panelCaption;
+        let contentIcon = this.elementContent.dataset.panelIcon;
+        if (contentTitle) this.title = contentTitle;
+        if (contentIcon) this.icon = contentIcon;
+        this._updateTitle();
+
+        this.undockInitiator = new UndockInitiator(this.elementTitle, this.performUndockToDialog.bind(this));
+        delete this.floatingDialog;
+
+        this.mouseDownHandler = new EventHandler(this.elementPanel, 'mousedown', this.onMouseDown.bind(this));
+        this.touchDownHandler = new EventHandler(this.elementPanel, 'touchstart', this.onMouseDown.bind(this), { passive: true });
+
+        this._resolvedElementContent = this.elementContent;
+        if (this.elementContent instanceof HTMLSlotElement) {
+            this._resolvedElementContent = <HTMLElement>this.elementContent.assignedElements()?.[0];
+        }
+    }
+
+    static createContextMenuContentCallback = (panelContainer: PanelContainer): Node[] => {
+        const result = [];
+
+        if (panelContainer.dockManager.config.enableBrowserWindows) {
+            let btnNewBrowserWindow = document.createElement('div');
+            btnNewBrowserWindow.innerText = Localizer.getString('NewBrowserWindow');
+            result.push(btnNewBrowserWindow);
+    
+            btnNewBrowserWindow.onclick = () => {
+                panelContainer.undockToBrowserDialog();
+                panelContainer.closeContextMenu();
+            };
+        }
+
+        return result;
+    }
+
+    oncontextMenuClicked(e: MouseEvent) {
+        e.preventDefault();
+
+        if (!this._ctxMenu && PanelContainer.createContextMenuContentCallback) {
+            const menuItems = PanelContainer.createContextMenuContentCallback(this);
+
+            if (menuItems.length == 0) {
+                return;
+            }
+            
+            this._ctxMenu = document.createElement('div');
+            this._ctxMenu.className = 'dockspab-tab-handle-context-menu';
+            this._ctxMenu.append(...menuItems);
+            this._ctxMenu.style.left = e.pageX + "px";
+            this._ctxMenu.style.top = e.pageY + "px";
+            document.body.appendChild(this._ctxMenu);
+            window.addEventListener('mouseup', this.windowsContextMenuClose);
+        } else {
+            this.closeContextMenu();
+        }
+    }
+
+    closeContextMenu() {
+        if (this._ctxMenu) {
+            document.body.removeChild(this._ctxMenu);
+            delete this._ctxMenu;
+            window.removeEventListener('mouseup', this.windowsContextMenuClose);
+        }
+    }
+
+    windowsContextMenuClose(e: Event) {
+        let cp = e.composedPath();
+        for (let i in cp) {
+            let el = cp[i];
+            if (el == this._ctxMenu)
+                return;
+        }
+        this.closeContextMenu();
     }
 
     canUndock(state: boolean) {
@@ -126,13 +257,22 @@ export class PanelContainer implements IDockContainerWithSize {
         this.undockInitiator.enabled = canUndock;
     }
 
-    static loadFromState(state: IState, dockManager: DockManager) {
-        let elementName = state.element;
-        let elementContent = document.getElementById(elementName);
+    static async loadFromState(state: IState, dockManager: DockManager) {
+        let elementContent: HTMLElement;
+        let title: string;
+        if (!dockManager.getElementCallback) {
+            let elementName = state.element;
+            elementContent = document.getElementById(elementName);
+        } else {
+            let res = await dockManager.getElementCallback(state);
+            elementContent = res.element;
+            title = res.title;
+        }
+
         if (elementContent === null) {
             return null;
         }
-        let ret = new PanelContainer(elementContent, dockManager);
+        let ret = new PanelContainer(elementContent, dockManager, title);
         ret.loadState(state);
         return ret;
     }
@@ -187,65 +327,6 @@ export class PanelContainer implements IDockContainerWithSize {
         }
     }
 
-    _initialize() {
-        this.name = Utils.getNextId('panel_');
-        this.elementPanel = document.createElement('div');
-        this.elementPanel.tabIndex = 0;
-        this.elementTitle = document.createElement('div');
-        this.elementTitleText = document.createElement('div');
-        this.elementContentHost = document.createElement('div');
-        this.elementButtonClose = document.createElement('div');
-
-        this.elementPanel.appendChild(this.elementTitle);
-        this.elementTitle.appendChild(this.elementTitleText);
-        this.elementTitle.appendChild(this.elementButtonClose);
-        this.elementButtonClose.classList.add('panel-titlebar-button-close');
-        this.elementButtonClose.style.display = this._hideCloseButton ? 'none' : 'block';
-
-        this.elementPanel.appendChild(this.elementContentHost);
-
-        this.elementPanel.classList.add('panel-base');
-        this.elementTitle.classList.add('panel-titlebar');
-        this.elementTitle.classList.add('disable-selection');
-        this.elementTitleText.classList.add('panel-titlebar-text');
-        this.elementContentHost.classList.add('panel-content');
-
-        // set the size of the dialog elements based on the panel's size
-        let panelWidth = this.elementContentContainer.clientWidth;
-        let panelHeight = this.elementContentContainer.clientHeight;
-        let titleHeight = this.elementTitle.clientHeight;
-
-        this.elementContentWrapper = document.createElement("div");
-        this.elementContentWrapper.classList.add('panel-content-wrapper');
-
-        this._setPanelDimensions(panelWidth, panelHeight + titleHeight);
-
-        if (!this._hideCloseButton) {
-            this.closeButtonClickedHandler =
-                new EventHandler(this.elementButtonClose, 'mousedown', this.onCloseButtonClicked.bind(this));
-            this.closeButtonTouchedHandler =
-                new EventHandler(this.elementButtonClose, 'touchstart', this.onCloseButtonClicked.bind(this));
-        }
-
-        Utils.removeNode(this.elementContentWrapper);
-        this.elementContentHost.appendChild(this.elementContentWrapper);
-
-        // Extract the title from the content element's attribute
-        let contentTitle = this.elementContent.dataset.panelCaption;
-        let contentIcon = this.elementContent.dataset.panelIcon;
-        if (contentTitle) this.title = contentTitle;
-        if (contentIcon) this.icon = contentIcon;
-        this._updateTitle();
-
-        this.undockInitiator = new UndockInitiator(this.elementTitle, this.performUndockToDialog.bind(this));
-        delete this.floatingDialog;
-
-        this.mouseDownHandler = new EventHandler(this.elementPanel, 'mousedown', this.onMouseDown.bind(this));
-        this.touchDownHandler = new EventHandler(this.elementPanel, 'touchstart', this.onMouseDown.bind(this));
-
-        this.elementContent.removeAttribute("hidden");
-    }
-
     onMouseDown() {
         this.dockManager.activePanel = this;
     }
@@ -268,6 +349,9 @@ export class PanelContainer implements IDockContainerWithSize {
         if (this.touchDownHandler) {
             this.touchDownHandler.cancel();
             delete this.touchDownHandler;
+        }
+        if (this.contextMenuHandler) {
+            this.contextMenuHandler.cancel();
         }
 
         Utils.removeNode(this.elementPanel);
@@ -295,7 +379,7 @@ export class PanelContainer implements IDockContainerWithSize {
     /**
     * Closes the panel
     */
-    performClose() {
+    private performClose() {
         this.isDialog = true;
         this.undockInitiator.enabled = false;
         this.elementContentWrapper.style.display = "block";
@@ -340,12 +424,30 @@ export class PanelContainer implements IDockContainerWithSize {
         }
     }
 
+    get resolvedElementContent(): HTMLElement {
+        if (this._resolvedElementContent)
+            return this._resolvedElementContent;
+        this._resolvedElementContent = this.elementContent;
+        if (this.elementContent instanceof HTMLSlotElement) {
+            this._resolvedElementContent = <HTMLElement>this.elementContent.assignedElements()?.[0];
+        }
+        return this._resolvedElementContent;
+    }
+
+    private panelDocked() {
+        if (this.elementContent.hidden)
+            this.elementContent.hidden = false;
+        if (this.elementContentContainer.parentElement !== this.dockManager.config.dialogRootElement)
+            this.dockManager.config.dialogRootElement.appendChild(this.elementContentContainer);
+    }
+
     resize(width: number, height: number) {
         // if (this._cachedWidth === width && this._cachedHeight === height)
         // {
         //     // Already in the desired size
         //     return;
         // }
+        this.panelDocked();
         this.setVisible(true);
         this._setPanelDimensions(width, height);
         this._cachedWidth = width;
@@ -374,17 +476,16 @@ export class PanelContainer implements IDockContainerWithSize {
         //    this.dockManager.config.dialogRootElement.appendChild(this.elementContentContainer);
         const rect = this.elementContentWrapper.getBoundingClientRect();
         const rootRect = this.dockManager.config.dialogRootElement.getBoundingClientRect();
-        this.elementContentContainer.style.left = (rect.x /*- rootRect.x*/) + 'px';
+        this.elementContentContainer.style.left = (rect.x - rootRect.x) + 'px';
         this.elementContentContainer.style.top = (rect.y - rootRect.y) + 'px';
         this.elementContentContainer.style.width = rect.width + 'px';
         this.elementContentContainer.style.height = rect.height + 'px';
     }
 
     setDialogPosition(x: number, y: number) {
-        const rootRect = this.dockManager.config.dialogRootElement.getBoundingClientRect();
-        this.elementContentContainer.style.left = (x - rootRect.x) + 'px';
+        this.elementContentContainer.style.left = x + 'px';
         //todo, 25px if it is a dialog, is it always 25px? where do we know...
-        this.elementContentContainer.style.top = (y + this.elementTitle.clientHeight /*- rootRect.y*/) + 'px';
+        this.elementContentContainer.style.top = (y + this.elementTitle.clientHeight) + 'px';
     }
 
     setVisible(isVisible: boolean) {
@@ -442,26 +543,58 @@ export class PanelContainer implements IDockContainerWithSize {
         this.close();
     }
 
+    undockToBrowserDialog() {
+        moveElementToNewBrowserWindow(this.resolvedElementContent, {
+            title: this.elementTitleText.textContent,
+            closeCallback: () => {
+                this.undockedToNewBrowserWindow = true;
+                this.closeInternal(false);
+            },
+            newWindowClosedCallback: () => {
+                this.undockedToNewBrowserWindow = false;
+                this.dockManager.notifyOnClosePanel(this);
+            },
+            focused: (e) => {
+                this.dockManager.activePanel = this;
+            },
+            blured: (e) => {
+                this.dockManager.activePanel = null;
+            }
+        });
+    }
+
     async close() {
+        this.closeInternal(true);
+    }
+
+    private async closeInternal(runCallback: boolean) {
         let close = true;
 
-        this.dockManager.config.dialogRootElement.removeChild(this.elementContentContainer);
+        if (this.elementContentContainer.parentElement === this.dockManager.config.dialogRootElement) {
+            if (!runCallback)
+                close = true;
+            else if (this.closePanelContainerCallback)
+                close = await this.closePanelContainerCallback(this);
+            else if (this.dockManager.closePanelContainerCallback)
+                close = await this.dockManager.closePanelContainerCallback(this);
 
-        if (this.closePanelContainerCallback)
-            close = await this.closePanelContainerCallback(this);
-        else if (this.dockManager.closePanelContainerCallback)
-            close = await this.dockManager.closePanelContainerCallback(this);
+            if (close) {
+                this.dockManager.config.dialogRootElement.removeChild(this.elementContentContainer);
 
-        if (close) {
-            if (this.isDialog) {
-                if (this.floatingDialog) {
-                    //this.floatingDialog.hide();
-                    this.floatingDialog.close(); // fires onClose notification
+                if (this.isDialog) {
+                    if (this.floatingDialog) {
+                        //this.floatingDialog.hide();
+                        this.floatingDialog.close(); // fires onClose notification
+                    }
                 }
-            }
-            else {
-                this.performClose();
-                this.dockManager.notifyOnClosePanel(this);
+                else {
+                    try {
+                        this.dockManager.notifyOnClosePanel(this);
+                    } catch (err) {
+                        console.error(err);
+                    }
+                    this.performClose();
+                }
             }
         }
     }
